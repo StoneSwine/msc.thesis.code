@@ -1,0 +1,9 @@
+# Source: https://github.com/simongog/sdsl-lite/blob/master/Make.helper.cmake
+PROJECT = $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
+LIB_DIR = $(PROJECT)/../lib
+INC_DIR = $(PROJECT)/../include
+SUCCINC_DIR = $(PROJECT)/../succinct
+MY_CXX_FLAGS= -g -Wall -std=c++17 -O3 -ffast-math
+MY_CXX=$(shell which g++)
+MY_CC=$(shell which gcc)
+
