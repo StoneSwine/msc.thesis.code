@@ -1,5 +1,7 @@
 # Code
 
+This repository contains the code used in my master thesis - Compact Datastructures in Intrusion detection systems.
+
 clone with: 
 
 ```sh
@@ -23,3 +25,5 @@ make
 cd ../src
 make
 ```
+
+After installation, the programs can be found in `src/bin/`. 
