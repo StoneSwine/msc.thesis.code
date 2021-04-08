@@ -1,5 +1,12 @@
 # Code
 
+clone with: 
+
+```sh
+git clone --recursive [URL]
+
+```
+
 ## Requirements
 
 * CMake >= 2.6, for the build system
