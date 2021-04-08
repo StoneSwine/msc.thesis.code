@@ -1,6 +1,0 @@
-1. labeled graph: 
-  (Implement sparse bitvector (sd_vector) in a better way)?
-  Remove L and make the program not segfault
-  
-2. Sigrep: 
-  
