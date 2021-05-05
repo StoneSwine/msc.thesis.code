@@ -43,52 +43,49 @@
 
 //inline static unsigned char Tc[64 * 1024];
 
-typedef struct _acsm_pattern
-{
+typedef struct _acsm_pattern {
 
-    struct _acsm_pattern *next;
-    unsigned char *patrn;
-    unsigned char *casepatrn;
-    int n;
-    int nocase;
-    int offset;
-    int depth;
-    int iid;
+  struct _acsm_pattern *next;
+  unsigned char *patrn;
+  unsigned char *casepatrn;
+  int n;
+  int nocase;
+  int offset;
+  int depth;
+  int iid;
 
 } ACSM_PATTERN;
 
-typedef struct
-{
+typedef struct {
 
-    /* Next state - based on input character */
-    uint NextState[ALPHABET_SIZE];
+  /* Next state - based on input character */
+  uint NextState[ALPHABET_SIZE];
 
-    /* Failure state - used while building NFA & DFA  */
-    int FailState;
+  /* Failure state - used while building NFA & DFA  */
+  int FailState;
 
-    /* List of patterns that end here, if any */
-    ACSM_PATTERN *MatchList;
+  /* List of patterns that end here, if any */
+  ACSM_PATTERN *MatchList;
 
 } ACSM_STATETABLE;
 
 /*
 * State machine Struct
 */
-typedef struct
-{
+typedef struct {
 
-    int acsmMaxStates;
-    int acsmNumStates;
+  int acsmMaxStates;
+  int acsmNumStates;
 
-    ACSM_PATTERN *acsmPatterns;
-    ACSM_STATETABLE *acsmStateTable;
+  ACSM_PATTERN *acsmPatterns;
+  ACSM_STATETABLE *acsmStateTable;
 
-    int bcSize;
-    short bcShift[256];
+  int bcSize;
+  short bcShift[256];
 
-    int numPatterns;
+  int numPatterns;
 
-    int alphabetsize;
+  int alphabetsize;
 
 } ACSM_STRUCT;
 
@@ -107,8 +104,11 @@ int acsmSearch(ACSM_STRUCT *acsm, unsigned char *T, int n,
                void *data, int *current_state);
 
 void acsmFree(ACSM_STRUCT *acsm);
+
 int acsmPatternCount(ACSM_STRUCT *acsm);
+
 int getMem(ACSM_STRUCT *acsm);
+
 int acsmPrintSummaryInfo(ACSM_STRUCT *acsm);
 
 #endif

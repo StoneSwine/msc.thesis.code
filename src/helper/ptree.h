@@ -5,21 +5,18 @@
 #include "defs.h"
 
 
-typedef struct Portnode_
-{
-	Portnode_ *next = nullptr;
-	Signature *sn;
+typedef struct Portnode_ {
+  Portnode_ *next = nullptr;
+  Signature *sn;
 } Portnode;
 
-typedef struct Flownode_
-{
-	Portnode *tcp[MAX_PORTS];
-	Portnode *udp[MAX_PORTS];
+typedef struct Flownode_ {
+  Portnode *tcp[MAX_PORTS];
+  Portnode *udp[MAX_PORTS];
 } Flownode;
 
-typedef struct Rootnode_
-{
-	Flownode *flow_gh[MAXFLOW];
+typedef struct Rootnode_ {
+  Flownode *flow_gh[MAXFLOW];
 } Rootnode;
 
 #endif
