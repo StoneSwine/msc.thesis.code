@@ -1,10 +1,12 @@
 /*
  * Author: Magnus Lien Lilja
- *
+ * Proof of concept (PoC) comparison of the signature representation, as it is in Snort and Suricata, and a suggested
+ * improvement. The program takes a signature file as argument, parses the signatures and builds both of the
+ * representations, before they are traversed and the time taken registered. Finally a developed metric for efficiency
+ * is used in order to see which of them is the better one.
  */
 
 #include <cstdio>
-#include <ctime>
 
 #include <elias_fano_compressed_list.hpp>
 #include <mapper.hpp>
@@ -60,14 +62,10 @@ int main(int argc, char *argv[]) {
   }
 
   for (size_t x = 0; x < no_samples; x++) {
-
-    /* Size variables in bytes (b).
-   * The sizes of the relations between the nodes are what's stored, and not the nodes themselves (new...)
-  */
+    // Size variables in bytes (b)
     p_node_size_b = l_vlcp_size_b = l_vlcc_size_b = p_ct_ms = l_ct_ms = 0;
 
-    // Initialise tree
-
+    // Initialise the original representation, which is based on pointers
     Rootnode *root = new Rootnode();
     p_node_size_b += sizeof(Rootnode *);
     p_node_size_b += sizeof(Rootnode);
@@ -83,6 +81,8 @@ int main(int argc, char *argv[]) {
       }
     }
 
+    // Parse all the signatures, traverse the tree and add them to a linked-list at the appropriate branch in the
+    // original representation.
     for (Signature *sig : sig_list) {
       if (sig->flowdir == FLOWDIR_TOCLIENT) {
         cn_f = &root->flow_gh[FLOWDIR_TOCLIENT];
@@ -119,9 +119,7 @@ int main(int argc, char *argv[]) {
       }
     }
 
-    /*
- * Build the structure 
- */
+    // Build the alternative representation
     std::set<uint32_t> up;
     for (auto sig : sig_list) {
       for (auto sp : sig->dstport) {
@@ -135,7 +133,7 @@ int main(int argc, char *argv[]) {
     }
 
     ltree<bit_vector, select_support_mcl<1>, select_support_mcl<0>, rank_support_v5<1>, rank_support_v<0>> l;
-    // Build the "static" tree level order
+    // Build the "static" part of the tree level order
     l.append(2, {FLOWDIR_TOSERVER, FLOWDIR_TOCLIENT});
     for (size_t i = 0; i < MAXFLOW; i++) {
       l.append(2, {IPPROTO_TCP, IPPROTO_UDP});
@@ -150,14 +148,14 @@ int main(int argc, char *argv[]) {
     }
     l.finalize();
 
-    /*
- * Insert the signature ids 
- */
-    int sc = 8; // number of nodes in the "skeleton
+    // Insert the signature ids
+    // number of nodes in the static part of the tree. Hardcoded for now
+    int sc = 8;
 
     const int no_protport = (MAXFLOW + IPPROTO_MAX) * up_it.size();
     std::vector<uintptr_t> tmp_vlc[no_protport];
 
+    // Traverse all the signatures, and add them to the correct branch in the alternative representation.
     for (auto sig : sig_list) {
       int nodeid = 1;
       if (sig->flowdir == FLOWDIR_TOCLIENT) {
@@ -183,9 +181,9 @@ int main(int argc, char *argv[]) {
       }
     }
 
-    /*
-  * Build the vlc codes and clear the temporary vector
-  */
+    // Build the array containing references between a branch and the signatures. Also clear the temporary vector from
+    // previously. The last signature from the branch with the most amount of signatures are also kept, as an object to
+    // search for later on.
     std::vector<uintptr_t> tmp;
     bit_vector vlc_bv(0, 0);
 
@@ -226,14 +224,9 @@ int main(int argc, char *argv[]) {
     l_vlcc_size_b += (float) succinct::mapper::size_tree_of(vlcarray)->size;
     l_vlcp_size_b += size_in_bytes(vlc_bv);
 
-    // Search for all matching (a random signature id?), and see if the result is same...?
-    // Have a nodeid, and want to get all the matching signature ID's
-
-    // Search for signature in a LOUDS based representation
-
+    // Search for the signature ID (sigid) in the alternative representation
     Signature *findme = sig_list[sigid];
     auto start = timer::now();
-
     int nodeid = 1;
     if (findme->flowdir == FLOWDIR_TOCLIENT) {
       nodeid = l.labeledchild(nodeid, FLOWDIR_TOCLIENT);
@@ -267,7 +260,7 @@ int main(int argc, char *argv[]) {
       }
     }
 
-    // Search for signature in pointer based representation
+    // Search for signature in the original representation
     auto stop = timer::now();
     l_ct_ms = duration_cast<TIMEUNIT>(stop - start).count();
 
@@ -292,10 +285,13 @@ int main(int argc, char *argv[]) {
         printf("[POINTER]:FOUND THE SIGNATURE!\n");
       }
     }
+
+    // make sure that the branch where the signature is located, contains an equal amount of signatures.
     assert(pfound == lfound);
     stop = timer::now();
     p_ct_ms = duration_cast<TIMEUNIT>(stop - start).count();
 
+    // Register time and space
     unique_ports = up_it.size();
     signo_sb_alt = lfound;
     signo_sb_orig = pfound;
@@ -337,14 +333,17 @@ int main(int argc, char *argv[]) {
     delete (root);
   }
 
+  // Find median: https://en.cppreference.com/w/cpp/algorithm/nth_element
   const auto Xi_m = (l_total.begin() + l_total.size() / 2);
   const auto Xe_m = (p_total.begin() + p_total.size() / 2);
 
   std::nth_element(l_total.begin(), Xi_m, l_total.end());
   std::nth_element(p_total.begin(), Xe_m, p_total.end());
 
+  // Original space and time
   auto We = (float) p_node_size_b;
   auto Xe = (float) *Xe_m;
+  // Alternative space and time
   auto Wi = (float) alt_b_siz + alt_s_siz + l_vlcp_size_b + l_vlcc_size_b;
   auto Xi = (float) *Xi_m;
 

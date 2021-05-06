@@ -1,18 +1,21 @@
 /*
  * Author: Magnus Lien Lilja
- *
+ * Proof of concept (PoC) comparison of the Aho-Corasick deterministic finite automaton (DFA) algorithm, which is in
+ * Snort and Suricata, and the suggested improvement.
+ * The program takes a signature file as input, together with a search text and outputs the efficiency, according to a
+ * criteria defined in my master thesis.
  */
 
 #include <iostream>
 #include <sdsl/bit_vectors.hpp>
 #include <sdsl/wavelet_trees.hpp>
 #include <string>
-#include "snort-funcs/acsmx.h"
-#include "parser.h"
-#include "signature.h"
 #include <mapper.hpp>
 #include <cstdlib>
 #include <elias_fano_compressed_list.hpp>
+#include "snort-funcs/acsmx.h"
+#include "parser.h"
+#include "signature.h"
 
 using namespace sdsl;
 using namespace std::chrono;
@@ -30,6 +33,7 @@ int main(int argc, char *argv[]) {
   int alt_n_siz = 0;
   int alt_b_siz = 0;
 
+  // Parse arguments
   if (argc < 5) {
     fprintf(stderr, "Usage: ./program -i infile -s sampleno -st searchtext\n");
     exit(0);
@@ -45,40 +49,43 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  // Parse signatures from the input file
   std::vector<Signature *> sig_list;
   ParseSigFile(sig_list, infile);
+
+  // Read search text as bytes
   std::ifstream input(searchtext, std::ios::in | std::ios::binary);
   std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)), (std::istreambuf_iterator<char>()));
   input.close();
 
+  // Use the existing functionality from Snort to add patterns and compile the DFA
   for (size_t i = 0; i < sig_list.size(); i++) {
     acsmAddPattern(acsm, sig_list[i]->content, sig_list[i]->clen, 0, i);
   }
-
   acsmCompile(acsm);
 
   uint r;
   std::vector<uint> lg_l_total, ac_l_total;
-
   std::vector<uint> tmp_n; // temporary
-
   float lgtm;
   int ac_nfound;
+  float notzerosates;
 
+  // Exit if few patterns or states
   if (acsm->acsmMaxStates <= 1 || acsm->numPatterns <= 50) {
     exit(0);
   }
-  float notzerosates;
+
+
   for (size_t i = 0; i < no_samples; i++) {
-
     notzerosates = 0.0f;
-
-    // Aho-corasick search
+    // Aho-corasick search and time it
     auto start = timer::now();
     ac_nfound = acsmSearch(acsm, reinterpret_cast<unsigned char *>(bytes.data()), bytes.size(), (void *) 0, 0);
     auto stop = timer::now();
     int ac_st = duration_cast<TIMEUNIT>(stop - start).count();
 
+    // Build the alternative representation
     int next;
     uint c = 0;
     uint state = 0;
@@ -100,7 +107,6 @@ int main(int argc, char *argv[]) {
     }
 
     nb.resize(c);
-    c_states = c;
     succinct::elias_fano_compressed_list N(tmp_n);
 
     tmp_n.clear();
@@ -108,9 +114,11 @@ int main(int argc, char *argv[]) {
     int lg_nfound = 0;
 
     uint s = (acsm->acsmNumStates + 1);
-
     rank_support_v<1> nb_r1(&nb);
 
+    // Use the developed algorithm to search for matches in the improved representation.
+    // The existing matchList from Aho-Corasick in Snort is used here, but not accounted for memory-wise in either of
+    // the two algorithms
     start = timer::now();
     for (auto i : bytes) {
       r = i * s;
@@ -126,7 +134,11 @@ int main(int argc, char *argv[]) {
     }
 
     stop = timer::now();
-    assert(lg_nfound == ac_nfound); // Assert that the two versions match equally as many patterns.
+
+    // Assert that the two versions match equally as many patterns.
+    assert(lg_nfound == ac_nfound);
+
+    // Register time and space
     int lg_st = duration_cast<TIMEUNIT>(stop - start).count();
     lgtm = (float) succinct::mapper::size_tree_of(N)->size + (float) size_in_bytes(nb);
 
@@ -135,10 +147,10 @@ int main(int argc, char *argv[]) {
 
     ac_l_total.push_back(ac_st);
     lg_l_total.push_back(lg_st);
-
+    c_states = c;
   }
 
-  // Calculate median
+  // Calculate median: https://en.cppreference.com/w/cpp/algorithm/nth_element
   const auto Xi_m = (lg_l_total.begin() + lg_l_total.size() / 2);
   const auto Xe_m = (ac_l_total.begin() + ac_l_total.size() / 2);
 
