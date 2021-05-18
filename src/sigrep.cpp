@@ -1,6 +1,12 @@
-#include <iostream>
+/*
+ * Author: Magnus Lien Lilja
+ * Proof of concept (PoC) comparison of the signature representation, as it is in Snort and Suricata, and a suggested
+ * improvement. The program takes a signature file as argument, parses the signatures and builds both of the
+ * representations, before they are traversed and the time taken registered. Finally a developed metric for efficiency
+ * is used in order to see which of them is the better one.
+ */
+
 #include <cstdio>
-#include <time.h>
 
 #include <elias_fano_compressed_list.hpp>
 #include <mapper.hpp>
@@ -12,49 +18,34 @@
 #include <ostream>
 #include "defs.h"
 
-//#define DEBUG
-
 using namespace sdsl;
 using namespace std;
 using namespace std::chrono;
 using timer = std::chrono::high_resolution_clock;
 
-int main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
   int no_samples = 2;
-  int wtf = 0;
-  vector<uint> l_mem;
-  vector<uint> p_mem;
   vector<uint> l_total;
   vector<uint> l_select_unique;
   vector<uint> p_total;
-  char *infile, *outfile;
-  uint signo, sigsiz, no_ports;
+  char *infile;
 
-  ofstream signature_time_file;
+  int unique_ports = 0;
+  int signo_sb_orig = 0;
+  int signo_sb_alt = 0;
+  int alt_b_siz = 0;
+  int alt_s_siz = 0;
 
-  if (argc < 7)
-  {
-    fprintf(stderr, "Usage: ./program -o outfile -i infile -s sampleno (-w)\n");
+
+  if (argc < 3) {
+    fprintf(stderr, "Usage: ./program -i infile -s sampleno\n");
     exit(0);
   }
-  for (int i = 1; i < argc; i++)
-  {
-    if (strcmp(argv[i], "-o") == 0)
-    {
-      outfile = argv[i + 1];
-    }
-    else if (strcmp(argv[i], "-i") == 0)
-    {
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "-i") == 0) {
       infile = argv[i + 1];
-    }
-    else if (strcmp(argv[i], "-s") == 0)
-    {
+    } else if (strcmp(argv[i], "-s") == 0) {
       no_samples = atoi(argv[i + 1]);
-    }
-    else if (strcmp(argv[i], "-w") == 0)
-    {
-      wtf = 1;
     }
   }
 
@@ -66,57 +57,44 @@ int main(int argc, char *argv[])
   sig_size_b += sizeof(Signature *) * sig_list.size() + (sizeof(Signature) * sig_list.size());
   sig_size_b += sizeof(sig_list);
 
-  if (sig_list.size() <= 50)
-  {
+  if (sig_list.size() <= 50) {
     exit(0);
   }
 
-  for (size_t x = 0; x < no_samples; x++)
-  {
-
-    /* Size variables in bytes (b).
-   * The sizes of the relations between the nodes are what's stored, and not the nodes themselves (new...)
-  */
+  for (size_t x = 0; x < no_samples; x++) {
+    // Size variables in bytes (b)
     p_node_size_b = l_vlcp_size_b = l_vlcc_size_b = p_ct_ms = l_ct_ms = 0;
 
-    // Initialise tree
-
+    // Initialise the original representation, which is based on pointers
     Rootnode *root = new Rootnode();
     p_node_size_b += sizeof(Rootnode *);
     p_node_size_b += sizeof(Rootnode);
     Flownode **cn_f;
     Portnode **cn_p, *cn_p_tmp;
 
-    for (size_t i = 0; i < MAXFLOW; i++)
-    {
+    for (size_t i = 0; i < MAXFLOW; i++) {
       root->flow_gh[i] = new Flownode();
       p_node_size_b += sizeof(Flownode);
-      for (size_t j = 0; j < MAX_PORTS; j++)
-      {
+      for (size_t j = 0; j < MAX_PORTS; j++) {
         root->flow_gh[i]->tcp[j] = nullptr;
         root->flow_gh[i]->udp[j] = nullptr;
       }
     }
 
-    for (Signature *sig : sig_list)
-    {
-      if (sig->flowdir == FLOWDIR_TOCLIENT)
-      {
+    // Parse all the signatures, traverse the tree and add them to a linked-list at the appropriate branch in the
+    // original representation.
+    for (Signature *sig : sig_list) {
+      if (sig->flowdir == FLOWDIR_TOCLIENT) {
         cn_f = &root->flow_gh[FLOWDIR_TOCLIENT];
-      }
-      else // TOSERVER
+      } else // TOSERVER
       {
         cn_f = &root->flow_gh[FLOWDIR_TOSERVER];
       }
 
-      for (auto sp : sig->dstport)
-      {
-        if (sig->protocol == IPPROTO_TCP)
-        {
+      for (auto sp : sig->dstport) {
+        if (sig->protocol == IPPROTO_TCP) {
           cn_p = &(*cn_f)->tcp[sp];
-        }
-        else
-        {
+        } else {
           cn_p = &(*cn_f)->udp[sp];
         }
 
@@ -124,18 +102,14 @@ int main(int argc, char *argv[])
         temp_pn->sn = sig;
 
         // list is empty
-        if (!(*cn_p))
-        {
+        if (!(*cn_p)) {
           (*cn_p) = temp_pn;
           p_node_size_b += sizeof(Portnode);
-        }
-        else
-        { // traverse list until last node is reached and insert
+        } else { // traverse list until last node is reached and insert
 
           Portnode *last = (*cn_p);
 
-          while (last->next)
-          {
+          while (last->next) {
             last = last->next;
           }
 
@@ -145,113 +119,89 @@ int main(int argc, char *argv[])
       }
     }
 
-    /*
- * Build the structure 
- */
+    // Build the alternative representation
     std::set<uint32_t> up;
-    for (auto sig : sig_list)
-    {
-      for (auto sp : sig->dstport)
-      {
+    for (auto sig : sig_list) {
+      for (auto sp : sig->dstport) {
         up.insert(sp);
       }
     }
     std::vector<uint32_t> up_it(up.begin(), up.end());
 
-    if (up_it.size() <= 1)
-    {
+    if (up_it.size() <= 1) {
       exit(0);
     }
 
     ltree<bit_vector, select_support_mcl<1>, select_support_mcl<0>, rank_support_v5<1>, rank_support_v<0>> l;
-    // Build the "static" tree level order
+    // Build the "static" part of the tree level order
     l.append(2, {FLOWDIR_TOSERVER, FLOWDIR_TOCLIENT});
-    for (size_t i = 0; i < MAXFLOW; i++)
-    {
+    for (size_t i = 0; i < MAXFLOW; i++) {
       l.append(2, {IPPROTO_TCP, IPPROTO_UDP});
     }
-    for (size_t i = 0; i < MAXFLOW * IPPROTO_MAX; i++)
-    {
+    for (size_t i = 0; i < MAXFLOW * IPPROTO_MAX; i++) {
       l.append(up_it.size(), up_it);
     }
-    for (size_t i = 0; i < MAXFLOW + IPPROTO_MAX; i++)
-    {
-      for (auto p : up)
-      {
+    for (size_t i = 0; i < MAXFLOW + IPPROTO_MAX; i++) {
+      for (auto p : up) {
         l.append(0);
       }
     }
     l.finalize();
 
-    /*
- * Insert the signature ids 
- */
-    int sc = 8; // number of nodes in the "skeleton
+    // Insert the signature ids
+    // number of nodes in the static part of the tree. Hardcoded for now
+    int sc = 8;
 
     const int no_protport = (MAXFLOW + IPPROTO_MAX) * up_it.size();
-    //vlc_vector<VLC_CODER> vlcarray;
     std::vector<uintptr_t> tmp_vlc[no_protport];
 
-    for (auto sig : sig_list)
-    {
+    // Traverse all the signatures, and add them to the correct branch in the alternative representation.
+    for (auto sig : sig_list) {
       int nodeid = 1;
-      if (sig->flowdir == FLOWDIR_TOCLIENT)
-      {
+      if (sig->flowdir == FLOWDIR_TOCLIENT) {
         nodeid = l.labeledchild(nodeid, FLOWDIR_TOCLIENT);
-      }
-      else
-      {
+      } else {
         nodeid = l.labeledchild(nodeid, FLOWDIR_TOSERVER);
       }
 
       // Depth 2
-      if (sig->protocol == IPPROTO_TCP)
-      {
+      if (sig->protocol == IPPROTO_TCP) {
         nodeid = l.labeledchild(nodeid, IPPROTO_TCP);
-      }
-      else
-      {
+      } else {
         nodeid = l.labeledchild(nodeid, IPPROTO_UDP);
       }
 
       // Depth 3
       int pnid = nodeid;
-      for (auto sp : sig->dstport)
-      {
+      for (auto sp : sig->dstport) {
         nodeid = l.labeledchild(pnid, sp) - sc;
-        if (nodeid >= 0)
-        {
+        if (nodeid >= 0) {
           tmp_vlc[nodeid].push_back(reinterpret_cast<std::uintptr_t>(sig));
         }
       }
     }
 
-    /*
-  * Build the vlc codes and clear the temporary vector
-  */
+    // Build the array containing references between a branch and the signatures. Also clear the temporary vector from
+    // previously. The last signature from the branch with the most amount of signatures are also kept, as an object to
+    // search for later on.
     std::vector<uintptr_t> tmp;
     bit_vector vlc_bv(0, 0);
 
-    int maxpos = 0;
     int maxpos_count = 0;
     int sigid = 0;
 
-    for (size_t i = 0; i < no_protport; i++)
-    {
+    for (size_t i = 0; i < no_protport; i++) {
       int noc = tmp_vlc[i].size();
-      if (noc > maxpos_count)
-      {
-        maxpos = i;
+      if (noc > maxpos_count) {
         maxpos_count = noc;
-        sigid = ((Signature *)tmp_vlc[i].back())->id;
+        sigid = ((Signature *) tmp_vlc[i].back())->id;
       }
       bit_vector tmp_bv = vlc_bv;
       tmp_bv.resize(vlc_bv.size() + noc + 1);
       int pos = vlc_bv.size();
       tmp_bv[pos++] = 1;
 
-      for (size_t j = 0; j < noc; j++)
-      {
+      for (size_t j = 0; j < noc; j++) {
         tmp_bv[pos++] = 0;
         tmp.push_back(tmp_vlc[i][j]);
       }
@@ -263,8 +213,6 @@ int main(int argc, char *argv[])
       tmp_vlc[i].shrink_to_fit();
     }
 
-    //vlcarray = vlc_vector<VLC_CODER>(std::move(tmp));
-
     succinct::elias_fano_compressed_list vlcarray(tmp);
 
     tmp.clear();
@@ -273,156 +221,104 @@ int main(int argc, char *argv[])
     select_support_mcl<1> vlc_bv_s1(&vlc_bv);
     rank_support_v<0> vlc_bv_r0(&vlc_bv);
 
-    l_vlcc_size_b += (float)succinct::mapper::size_tree_of(vlcarray)->size; //size_in_bytes(vlcarray);
+    l_vlcc_size_b += (float) succinct::mapper::size_tree_of(vlcarray)->size;
     l_vlcp_size_b += size_in_bytes(vlc_bv);
 
-    // Search for all matching (a random signature id?), and see if the result is same...?
-    // Have a nodeid, and want to get all the matching signature ID's
-
-    // Search for signature in a LOUDS based representation
-
+    // Search for the signature ID (sigid) in the alternative representation
     Signature *findme = sig_list[sigid];
     auto start = timer::now();
-
     int nodeid = 1;
-    if (findme->flowdir == FLOWDIR_TOCLIENT)
-    {
+    if (findme->flowdir == FLOWDIR_TOCLIENT) {
       nodeid = l.labeledchild(nodeid, FLOWDIR_TOCLIENT);
-    }
-    else
-    {
+    } else {
       nodeid = l.labeledchild(nodeid, FLOWDIR_TOSERVER);
     }
 
     // Depth 2
-    if (findme->protocol == IPPROTO_TCP)
-    {
+    if (findme->protocol == IPPROTO_TCP) {
       nodeid = l.labeledchild(nodeid, IPPROTO_TCP);
-    }
-    else
-    {
+    } else {
       nodeid = l.labeledchild(nodeid, IPPROTO_UDP);
     }
 
     // Depth 3
     int pnid = nodeid;
-    int lfound, pfound; 
-    lfound = 0; pfound = 1;
+    int lfound, pfound;
+    lfound = 0;
+    pfound = 1;
     nodeid = l.labeledchild(pnid, findme->dstport[0]) - sc;
-    if (nodeid >= 0)
-    {
+    if (nodeid >= 0) {
 
       int i = vlc_bv_r0(vlc_bv_s1(nodeid + 1));
       int stop = vlc_bv_r0(vlc_bv_s1(nodeid + 2));
 
-      for (i; i < stop; i++)
-      { 
+      for (i; i < stop; i++) {
         lfound++;
-        if (((Signature *)vlcarray[i]) == findme)
-        {
+        if (((Signature *) vlcarray[i]) == findme) {
           printf("[LOUDS]:FOUND THE SIGNATURE!\n");
         }
       }
     }
 
-    // Search for signature in pointer based representation
+    // Search for signature in the original representation
     auto stop = timer::now();
     l_ct_ms = duration_cast<TIMEUNIT>(stop - start).count();
 
     start = timer::now();
-    if (findme->flowdir == FLOWDIR_TOCLIENT)
-    {
+    if (findme->flowdir == FLOWDIR_TOCLIENT) {
       cn_f = &root->flow_gh[FLOWDIR_TOCLIENT];
-    }
-    else // TOSERVER
+    } else // TOSERVER
     {
       cn_f = &root->flow_gh[FLOWDIR_TOSERVER];
     }
 
-    if (findme->protocol == IPPROTO_TCP)
-    {
+    if (findme->protocol == IPPROTO_TCP) {
       cn_p = &(*cn_f)->tcp[findme->dstport[0]];
-    }
-    else
-    {
+    } else {
       cn_p = &(*cn_f)->udp[findme->dstport[0]];
     }
 
-    while ((*cn_p)->next != nullptr)
-    {
+    while ((*cn_p)->next != nullptr) {
       pfound++;
       *cn_p = (*cn_p)->next;
-      // std::cout << (*cn_p)->sn->id << std::endl;
-      if ((*cn_p)->sn == findme)
-      {
+      if ((*cn_p)->sn == findme) {
         printf("[POINTER]:FOUND THE SIGNATURE!\n");
       }
     }
+
+    // make sure that the branch where the signature is located, contains an equal amount of signatures.
     assert(pfound == lfound);
     stop = timer::now();
     p_ct_ms = duration_cast<TIMEUNIT>(stop - start).count();
 
-    if (!wtf)
-    {
-      printf("+--[Summary]-------------------------------------------------\n");
-      printf("| No. Signatures in search branch       : %d-%d\n", lfound, pfound);
-      printf("| Filename                              : %s\n", infile);
-      printf("| No. Signatures                        : %lu \n", sig_list.size());
-      printf("| Signature list size                   : %u\tB\n", sig_size_b);
-      printf("| No of uique ports                     : %u\n", up_it.size());
-      printf("+--[Pointer based representation]----------------------------\n");
-      printf("| Size                                  : %.5f KB\n", (float)(p_node_size_b / 1024.0f));
-      printf("| Search time in microseconds           : %u\n", p_ct_ms);
-      printf("+--[LOUDS representation]------------------------------------\n");
-      printf("| Node relations (B)                    : %lu\tB\n", size_in_bytes(l.bv));
-      printf("| Labels (S)                            : %lu\tB\n", size_in_bytes(l.s));
-      printf("| Sig.ref. - VLC vector (bitvector)     : %u\tB\n", l_vlcp_size_b);
-      printf("| Sig.ref. - VLC vector (content)       : %u\tB\n", l_vlcc_size_b);
-      printf("| Total                                 : %.5f KB\n",
-             (float)((size_in_bytes(l.bv) + size_in_bytes(l.s) + l_vlcp_size_b + l_vlcc_size_b) / 1024.0f));
-      printf("| Search time in microseconds           : %u\n", l_ct_ms);
-      printf("| time spent on operations on labels    : %u\n", l.su_t);
-      printf("+------------------------------------------------------------\n");
-    }
-    else
-    {
-      p_mem.push_back(p_node_size_b);
-      l_mem.push_back(size_in_bytes(l.bv) + size_in_bytes(l.s) + l_vlcp_size_b + l_vlcc_size_b);
-      p_total.push_back(p_ct_ms);
-      l_total.push_back(l_ct_ms);
-      l_select_unique.push_back(l.su_t);
-      signo = sig_list.size();
-      sigsiz = sig_size_b;
-      no_ports = up_it.size();
-    }
+    // Register time and space
+    unique_ports = up_it.size();
+    signo_sb_alt = lfound;
+    signo_sb_orig = pfound;
+    alt_b_siz = size_in_bytes(l.bv);
+    alt_s_siz = size_in_bytes(l.s);
+
+    p_total.push_back(p_ct_ms);
+    l_total.push_back(l_ct_ms);
+    l_select_unique.push_back(l.su_t);
+
 
     // Delete and deconstruct
-    for (size_t i = 1; i < MAXFLOW; i++)
-    {
-      cn_f = &root->flow_gh[i-1];
-      for (size_t p = 1; p < MAXFLOW; p++)
-      {
-        for (size_t j = 1; j < MAX_PORTS; j++)
-        {
-          if (p-1)
-          {
-            cn_p = &(*cn_f)->tcp[j-1];
-          }
-          else
-          {
-            cn_p = &(*cn_f)->udp[j-1];
+    for (size_t i = 1; i < MAXFLOW; i++) {
+      cn_f = &root->flow_gh[i - 1];
+      for (size_t p = 1; p < MAXFLOW; p++) {
+        for (size_t j = 1; j < MAX_PORTS; j++) {
+          if (p - 1) {
+            cn_p = &(*cn_f)->tcp[j - 1];
+          } else {
+            cn_p = &(*cn_f)->udp[j - 1];
           }
 
-          if ((*cn_p) != nullptr)
-          {
-            if ((*cn_p)->next == nullptr)
-            {
+          if ((*cn_p) != nullptr) {
+            if ((*cn_p)->next == nullptr) {
               delete ((*cn_p));
-            }
-            else
-            {
-              while ((*cn_p)->next != nullptr)
-              {
+            } else {
+              while ((*cn_p)->next != nullptr) {
                 cn_p_tmp = *cn_p;
                 *cn_p = (*cn_p)->next;
                 delete (cn_p_tmp);
@@ -437,32 +333,47 @@ int main(int argc, char *argv[])
     delete (root);
   }
 
-  if (wtf)
-  {
+  // Find median: https://en.cppreference.com/w/cpp/algorithm/nth_element
+  const auto Xi_m = (l_total.begin() + l_total.size() / 2);
+  const auto Xe_m = (p_total.begin() + p_total.size() / 2);
 
-    float timedif = ((float)(std::accumulate(l_total.begin(), l_total.end(), 0)) / (no_samples)) / ((float)(std::accumulate(p_total.begin(), p_total.end(), 0)) / (no_samples));
-    float sizedif = ((float)(std::accumulate(p_mem.begin(), p_mem.end(), 0)) / (no_samples)) / ((float)(std::accumulate(l_mem.begin(), l_mem.end(), 0)) / (no_samples));
+  std::nth_element(l_total.begin(), Xi_m, l_total.end());
+  std::nth_element(p_total.begin(), Xe_m, p_total.end());
 
-    signature_time_file.open(outfile);
-    signature_time_file << "; no.signatures: " << signo << " with size: " << sigsiz << " B. No. ports: " << no_ports << "\n";
-    signature_time_file << "; time differenes: "
-                        << timedif
-                        << " size differences: "
-                        << sizedif
-                        << " ratio: "
-                        << timedif / sizedif
-                        << "\n";
-    signature_time_file << "sample, pointer-time,  louds-time, pointer-memory, louds-memory, loud-debug-slc,\n";
+  // Original space and time
+  auto We = (float) p_node_size_b;
+  auto Xe = (float) *Xe_m;
+  // Alternative space and time
+  auto Wi = (float) alt_b_siz + alt_s_siz + l_vlcp_size_b + l_vlcc_size_b;
+  auto Xi = (float) *Xi_m;
 
-    for (size_t i = 0; i < no_samples; i++)
-    {
-      signature_time_file << (i + 1) << "," << p_total[i] << "," << l_total[i] << "," << p_mem[i] << "," << l_mem[i] << "," << l_select_unique[i] << endl;
-    }
-    signature_time_file.close();
-  }
+  printf("+--[Summary]-------------------------------------------------\n");
+  printf("| Samples/runs                          : %d\n", no_samples);
+  printf("| No. Signatures in search branch       : %d-%d\n", signo_sb_alt, signo_sb_orig);
+  printf("| Filename                              : %s\n", infile);
+  printf("| Total No. Signatures                  : %lu \n", sig_list.size());
+  printf("| Signature list size                   : %lu\tB\n", sig_size_b);
+  printf("| No of unique ports                    : %d\n", unique_ports);
+  printf("+--[ORIGINAL representation]----------------------------\n");
+  printf("| Size  (We)                            : %.5f KB\n", (float) (We / 1024.0f));
+  printf("| Size  (We)                            : %.1f B\n", We);
+  printf("| Median search time in ns (Xe)         : %.1f\n", Xe);
+  printf("+--[ALTERNATIVE representation]------------------------------------\n");
+  printf("| Node relations (B)                    : %d\tB\n", alt_b_siz);
+  printf("| Labels (S)                            : %d\tB\n", alt_s_siz);
+  printf("| Sig.ref. - VLC vector (bitvector)     : %lu\tB\n", l_vlcp_size_b);
+  printf("| Sig.ref. - VLC vector (content)       : %lu\tB\n", l_vlcc_size_b);
+  printf("| Total  (Wi)                           : %.5f KB\n", (float) (Wi) / 1024.0f);
+  printf("| Total  (Wi)                           : %.1f\n", (Wi));
+  printf("| Median search time in ns (Xi)         : %.1f\n", Xi);
+  printf("+-[EFFICIENCY]-----------------------------------------------------\n");
+  printf("| Space difference (We / Wi)            : %.5f\n", (We / Wi));
+  printf("| Time difference  (Xi / Xe)            : %.5f\n", (Xi / Xe));
+  printf("| Result     (We * Xe) / (Wi * Xi)      : %.5f\n", (We * Xe) / (Wi * Xi));
+  printf("+------------------------------------------------------------------\n");
 
-  for (auto sig : sig_list)
-  {
+
+  for (auto sig : sig_list) {
     free(sig->content);
     free(sig->msg);
 
